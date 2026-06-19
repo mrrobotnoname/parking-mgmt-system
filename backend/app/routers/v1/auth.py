@@ -3,7 +3,7 @@ from app.models.user import User
 from app.db.session import get_session
 from sqlmodel import select, Session
 from pydantic import BaseModel
-from app.core.security import create_token
+from app.core.security import create_token,verify_paasword
 
 router = APIRouter()
 
@@ -17,7 +17,7 @@ def login(payload: LoginRequest, db: Session=Depends(get_session)):
 
     if not user:
         raise HTTPException(status_code=401,detail="Invalid username")
-    if user.password != payload.password :
+    if  not verify_paasword(payload.password, user.password):
         raise HTTPException(status_code=401,detail="Invalid Password")
     
     jwt_token = create_token(subject=user.name,role=user.role)
