@@ -6,11 +6,14 @@ from src.state import ApplicationState
 from config.settings import VIDEO_SOURCE, IS_LIVE_STREAM
 
 async def camera_stream_loop(state: ApplicationState):
+
     cap = cv2.VideoCapture(VIDEO_SOURCE)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) # Force direct flush
     
     frame_delay = 0.01
     if not IS_LIVE_STREAM:
+
+        logging.info(f"Testing Video from the {VIDEO_SOURCE}")
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps > 0:
             frame_delay = 1.0 / fps

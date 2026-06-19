@@ -2,13 +2,13 @@
 import asyncio
 import sys
 import logging
-from pathlib import Path
 from src.utils.logger import setup_logger
 from src.state import ApplicationState
 from src.stream import camera_stream_loop
 from src.services.detector import PlateDetectorService
 from src.services.ocr import OcrService
 from src.services.pipeline import processing_pipeline_loop
+from config.settings import MODEL_PATH
 
 async def main():
     setup_logger()
@@ -16,8 +16,6 @@ async def main():
 
     state = ApplicationState()
     
-    BASE_DIR = Path(__file__).resolve().parent
-    MODEL_PATH = str(BASE_DIR / "model" / "best_openvino_model" / "best.xml")
 
     try:
         # Preload and compile models outside running execution layers

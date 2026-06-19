@@ -1,8 +1,11 @@
 __pycache__
 /tests
 
-/debug
+debug/
 /edge_detector/.edge-venv
 model/
 logs/*
 !/logs/.gitkeep
+.env
+
+backend/.api-venv

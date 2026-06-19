@@ -82,7 +82,7 @@ async def processing_pipeline_loop(
 
                     # Network execution holds this loop until guard confirms or denies via UI
                     await network.send_to_backend(text, direction, crop)
-
+                    
                     # Reset edge system state variables back to normal processing parameters
                     state.system_mode = "MONITORING"
                     state.reset_tracking()

@@ -35,12 +35,13 @@ class PlateDetectorService:
         valid_detections = []
         for pred in predictions:
             confidence = pred[4]
-            if confidence > 0.48:
+            if confidence > 0.6:
                 # Convert normalized box center coordinates to absolute frame pixels
                 x_c, y_c, box_w, box_h = pred[0]*w/640, pred[1]*h/640, pred[2]*w/640, pred[3]*h/640
                 x1, y1 = int(x_c - box_w/2), int(y_c - box_h/2)
                 x2, y2 = int(x_c + box_w/2), int(y_c + box_h/2)
                 box = [x1, y1, x2, y2]
+                
                 
                 # Check dynamic Region Of Interest Masking
                 if state_ref.is_inside_roi(box, w, h):
