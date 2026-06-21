@@ -1,11 +1,17 @@
 __pycache__
-/tests
 
+#testing and debuging folders
+/tests
 debug/
-/edge_detector/.edge-venv
-model/
 logs/
-!/logs/.gitkeep
-.env
+
+#virtual environment
 backend/.api-venv
-backend/app/parking-mgmt-system.db
+/edge_detector/.edge-venv
+.env
+
+#AI Models
+model/
+
+#database
+*.db

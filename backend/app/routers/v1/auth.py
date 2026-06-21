@@ -26,5 +26,5 @@ def login(payload: LoginRequest, db: Session=Depends(get_session)):
         "access_token":jwt_token,
         "token_type":"bearer",
         "role":user.role,
-        "Name":user.name
+        "Name":user.username
     }

@@ -1,11 +1,14 @@
 
+from pathlib import Path
 from sqlmodel import Session,create_engine,SQLModel
 
-db_name:str = "parking-mgmt-system.db"
-db_url:str =f"sqlite:///{db_name}"
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DB_PATH = BASE_DIR/ "parking.db"
+DB_URI:str =f"sqlite:///{DB_PATH}"
 
 
-engine = create_engine(db_url,connect_args={"check_same_thread": False})
+
+engine = create_engine(DB_URI,connect_args={"check_same_thread": False})
 
 def init_db():
     "Create the table if the tables alredy not in the database"

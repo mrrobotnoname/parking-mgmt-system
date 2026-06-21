@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlmodel import SQLModel, Field, Relationship
 from app.models.owner import Owner
 
+
 class ParkingLog(SQLModel, table=True):
     """
     Tracks every single check-in and check-out transaction.
