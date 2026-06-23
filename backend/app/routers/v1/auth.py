@@ -3,7 +3,6 @@ from fastapi.security import OAuth2PasswordRequestForm
 from app.models.user import User
 from app.db.session import get_session
 from sqlmodel import select, Session
-from pydantic import BaseModel
 from app.core.security import create_token,verify_paasword
 
 router = APIRouter()
