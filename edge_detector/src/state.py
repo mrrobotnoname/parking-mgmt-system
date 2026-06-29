@@ -68,3 +68,6 @@ class ApplicationState:
         self.last_plate_location = None
         self.box_area_history.clear()
         self.detected_direction = "UNKNOWN"
+        self.pending_event_id = None
+        self.pending_plate = None
+        self.pending_event_status = "IDLE"

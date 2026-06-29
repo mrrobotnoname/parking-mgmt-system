@@ -2,6 +2,8 @@ import re
 
 from dotenv import load_dotenv
 import os
+from fastapi import WebSocket, WebSocketException, status
+
 import jwt
 from pwdlib import PasswordHash
 from datetime import datetime, timedelta, timezone
@@ -9,8 +11,8 @@ from datetime import datetime, timedelta, timezone
 load_dotenv(override=True)
 
 password_hash = PasswordHash.recommended()
-SECRETE_KEY = os.getenv("SECRETE_KEY")
-ALGORITHEM = "HS256"
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 720  # expire in 12 hours
 
 
@@ -30,7 +32,7 @@ def create_token(subject: str, role: str):
         "role": role,
         "exp": expire
     }
-    jwt_token = jwt.encode(token_payload,SECRETE_KEY,algorithm=ALGORITHEM)
+    jwt_token = jwt.encode(token_payload,SECRET_KEY,algorithm=ALGORITHM)
     return jwt_token
 
 def encryptPassword(password:str):
@@ -41,3 +43,20 @@ def verify_paasword(plain_password:str, hash_password: str) -> str:
 
 def validate_password(password:str) -> bool:
    return bool(re.match(PASSWORD_REGEX,password))
+
+
+async def ws_authenticate(websocket: WebSocket) -> dict:
+    """
+    Validates JWT passed as ?token=<jwt> query param on WS connections.
+    Raises WebSocketException (403) if missing or invalid.
+    """
+    token = websocket.query_params.get("token")
+
+    if not token:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.PyJWTError:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)

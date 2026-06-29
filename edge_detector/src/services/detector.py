@@ -35,7 +35,7 @@ class PlateDetectorService:
         valid_detections = []
         for pred in predictions:
             confidence = pred[4]
-            if confidence > 0.6:
+            if confidence > 0.48:
                 # Convert normalized box center coordinates to absolute frame pixels
                 x_c, y_c, box_w, box_h = pred[0]*w/640, pred[1]*h/640, pred[2]*w/640, pred[3]*h/640
                 x1, y1 = int(x_c - box_w/2), int(y_c - box_h/2)
