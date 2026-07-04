@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 from sqlalchemy.exc import IntegrityError
 
@@ -11,8 +11,9 @@ from app.core.security import validate_password, encryptPassword
 
 from app.models.user import User
 from app.models.vehicle_type import VehicleType
-from app.core.base import GetSlots, Guard, GuardRespond, GuardUpdate, Vehicle, ParkingGridSetup, FloorSlotConfig
+from app.core.base import SlotResponse, Guard, GuardRespond, GuardUpdate, UpdatePricingRequest, Vehicle, ParkingGridSetup, FloorSlotConfig
 from app.models.slot import ParkingSlot
+from app.models.pricing import Pricing
 
 
 router = APIRouter(
@@ -28,7 +29,7 @@ def admin():
 
 # =============================================Guard haddling fucntions ===========================================
 # ===== Create the guard acoount ====
-@router.post("/guard/add")
+@router.post("/guard")
 def create_guard_account(data: Guard, db: Session = Depends(get_session)):
     user = db.exec(select(User)
                    .where(User.username == data.username)
@@ -64,7 +65,7 @@ def create_guard_account(data: Guard, db: Session = Depends(get_session)):
 # ====== get all the guard acoounts ====
 
 
-@router.get("/guards", response_model=List[GuardRespond])
+@router.get("/guard", response_model=List[GuardRespond])
 def get_guards(db: Session = Depends(get_session)):
     guards: tuple = db.exec(select(User).where(User.role == "guard")).all()
     return guards
@@ -189,12 +190,39 @@ def deleteVehicle(vehicle_id: int, db: Session = Depends(get_session)):
         "message": f"{vehicle.vehicle_type} was deleted."
     }
 
+
+@router.get("/pricing/{vehicle_type_id}")
+def get_pricing(vehicle_type_id: int, db: Session = Depends(get_session)):
+    vehicle_type = db.get(VehicleType, vehicle_type_id)
+    if not vehicle_type:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vehicle Type with ID {vehicle_type_id} does not exist."
+        )
+
+    pricing = db.exec(select(Pricing).where(
+        Pricing.vehicle_type_id == vehicle_type_id)).first()
+    if not pricing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pricing not configured for this vehicle type."
+        )
+
+    return {
+        "vehicle_type_id": pricing.vehicle_type_id,
+        "vehicle_type": vehicle_type.vehicle_type,
+        "hourly_rate": pricing.hourly_rate,
+        "fixed_rate": pricing.fixed_rate,
+        "threshold_minutes": pricing.threshold_minutes
+    }
+
 # ==================================================================================
 
 # ================ Parking slot managemet =======================#
 
-@router.get("/parking-grid",response_model=List[GetSlots])
-def getSlots(db:Session=Depends(get_session)):
+
+@router.get("/parking-grid", response_model=List[SlotResponse])
+def getSlots(db: Session = Depends(get_session)):
 
     slots = db.exec(select(ParkingSlot)).all()
 
@@ -206,13 +234,16 @@ def getSlots(db:Session=Depends(get_session)):
 
     # Map DB models to the response shape expected by GetSlots
     result = [
-        {
-            "slot_id": s.id,
-            "slot": s.display_slot,
-            "is_accessible": s.is_accessible,
-            "is_occupied": s.is_occupied,
-            "vehicle_type_id": s.vehicle_type_id
-        }
+        SlotResponse(
+            slot_id=s.id,
+            slot_number=s.slot_number,
+            floor=s.floor,
+            display_slot=s.display_slot,
+            is_occupied=s.is_occupied,
+            is_accessible=s.is_accessible,
+            vehicle_type_id=s.vehicle_type_id,
+            vehicle_type=s.vehicle_type.vehicle_type if s.vehicle_type else "Unknown",
+        )
         for s in slots
     ]
     return result
@@ -222,11 +253,11 @@ def getSlots(db:Session=Depends(get_session)):
 def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session)):
     """
     Setup the entire parking grid with floors and slots.
-    
+
     Process:
     1. Slots 1 to accessible_slots: Accessible (disabled people)
     2. Next slots: Distributed by vehicle type
-    
+
     Example:
     Floor 1: 60 total slots, 10 accessible
     - Slots 1-10: Accessible
@@ -242,16 +273,16 @@ def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session
                 status_code=400,
                 detail="Parking grid already exists. Delete existing slots first."
             )
-        
+
         total_slots_created = 0
-        
+
         # Process each floor
         for floor_config in data.floors_config:
             floor_num = floor_config.floor_number
             total_slots = floor_config.total_slots
             accessible_slots = floor_config.accessible_slots
             vehicle_dist = floor_config.vehicle_distribution
-            
+
             # Validate: accessible + vehicle slots = total slots
             vehicle_slots_sum = sum(vehicle_dist.values())
             if accessible_slots + vehicle_slots_sum != total_slots:
@@ -259,10 +290,10 @@ def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session
                     status_code=400,
                     detail=f"Floor {floor_num}: Accessible ({accessible_slots}) + Vehicle slots ({vehicle_slots_sum}) must equal total slots ({total_slots})"
                 )
-            
+
             # Create floor identifier
             floor_id = f"F{floor_num}"
-            
+
             # 1. Create accessible slots (1 to accessible_slots)
             for slot_num in range(1, accessible_slots + 1):
                 # Get a default vehicle type for accessible slots (first available)
@@ -272,7 +303,7 @@ def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session
                         status_code=400,
                         detail="No vehicle types defined. Please add vehicle types first."
                     )
-                
+
                 slot = ParkingSlot(
                     floor=floor_id,
                     slot_number=slot_num,
@@ -282,10 +313,10 @@ def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session
                 )
                 db.add(slot)
                 total_slots_created += 1
-            
+
             # 2. Create vehicle type slots
             current_slot_num = accessible_slots + 1
-            
+
             for vehicle_type_name, num_slots in vehicle_dist.items():
                 # Get vehicle type ID
                 vehicle_type = db.exec(
@@ -293,13 +324,13 @@ def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session
                         VehicleType.vehicle_type == vehicle_type_name
                     )
                 ).first()
-                
+
                 if not vehicle_type:
                     raise HTTPException(
                         status_code=400,
                         detail=f"Vehicle type '{vehicle_type_name}' not found. Please add it first."
                     )
-                
+
                 # Create slots for this vehicle type
                 for i in range(num_slots):
                     slot = ParkingSlot(
@@ -312,10 +343,10 @@ def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session
                     db.add(slot)
                     current_slot_num += 1
                     total_slots_created += 1
-        
+
         # Commit all slots
         db.commit()
-        
+
         return {
             "message": f"Parking grid setup completed successfully!",
             "num_floors": data.num_of_floors,
@@ -329,7 +360,7 @@ def setup_parking_grid(data: ParkingGridSetup, db: Session = Depends(get_session
                 for config in data.floors_config
             }
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -347,24 +378,24 @@ def clear_parking_grid(db: Session = Depends(get_session)):
     """
     try:
         slots = db.exec(select(ParkingSlot)).all()
-        
+
         if not slots:
             raise HTTPException(
                 status_code=404,
                 detail="No parking slots to delete."
             )
-        
+
         num_slots = len(slots)
         for slot in slots:
             db.delete(slot)
-        
+
         db.commit()
-        
+
         return {
             "message": f"Parking grid cleared successfully!",
             "slots_deleted": num_slots
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -398,5 +429,60 @@ def parking_grid_template(db: Session = Depends(get_session)):
         return {"vehicle_types": v_names, "template": template}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error building template: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error building template: {str(e)}")
 
+
+@router.put("/pricing/{vehicle_type_id}", status_code=200)
+def set_or_update_pricing(
+    vehicle_type_id: int,
+    payload: UpdatePricingRequest,
+    db: Session = Depends(get_session)
+):
+    """
+    Sets or updates the advanced hourly/fixed-cap pricing rules for a specific vehicle type.
+    """
+    # 1. Verify that the vehicle type actually exists first
+    vehicle_type = db.get(VehicleType, vehicle_type_id)
+    if not vehicle_type:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vehicle Type with ID {vehicle_type_id} does not exist."
+        )
+
+    # 2. Look for an existing pricing rule for this vehicle type
+    statement = select(Pricing).where(
+        Pricing.vehicle_type_id == vehicle_type_id)
+    pricing = db.exec(statement).first()
+
+    # 3. If it doesn't exist yet, create a new record. Otherwise, update it.
+    if not pricing:
+        pricing = Pricing(
+            vehicle_type_id=vehicle_type_id,
+            hourly_rate=payload.hourly_rate,
+            fixed_rate=payload.fixed_rate,
+            threshold_minutes=payload.threshold_minutes
+        )
+        message = f"Successfully created new pricing rules for '{vehicle_type.vehicle_type}'"
+    else:
+        pricing.hourly_rate = payload.hourly_rate
+        pricing.fixed_rate = payload.fixed_rate
+        pricing.threshold_minutes = payload.threshold_minutes
+        message = f"Successfully updated pricing rules for '{vehicle_type.vehicle_type}'"
+
+    # 4. Save changes
+    db.add(pricing)
+    db.commit()
+    db.refresh(pricing)
+
+    return {
+        "message": message,
+        "data": {
+            "id": pricing.id,
+            "vehicle_type_id": pricing.vehicle_type_id,
+            "vehicle_name": vehicle_type.vehicle_type,
+            "hourly_rate": pricing.hourly_rate,
+            "fixed_rate": pricing.fixed_rate,
+            "threshold_minutes": pricing.threshold_minutes
+        }
+    }

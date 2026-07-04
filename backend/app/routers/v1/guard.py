@@ -103,16 +103,16 @@ async def lookupExit(plate: str, db: Session = Depends(get_session), _: dict = D
         return {"found": False, "error": "data_mismatch"}
 
     vehicle_type = db.get(VehicleType, log.vehicle_id)
-    owner = db.get(Owner, log.owner_id) if log.owner_id else None
 
-    now = datetime.now(timezone.utc)
+
+    now = _utcnow()
 
     return {
         "found": True,
         "plate": log.vehicle_plate,
         "name": log.name,
         "vehicle_type": vehicle_type.vehicle_type if vehicle_type else "Unknown",
-        "phone_number": owner.phone_number if owner else None,
+        "phone_number": log.phone_number if log else None,
         "check_in_time": log.check_in_time,
         "duration_minutes": round((now - log.check_in_time).total_seconds() / 60, 1),
         "slot_id": log.slot_id,
@@ -136,7 +136,8 @@ async def setParking(
     new_session = ParkingLog(
         vehicle_plate=payload.plate,
         name=payload.name,
-        check_in_time=datetime.now(timezone.utc),  
+        phone_number = payload.phone_number,
+        check_in_time=_utcnow(),  
         is_active=True,
         vehicle_id=payload.vehicle_type_id,
         slot_id=slot.id,
@@ -185,7 +186,7 @@ async def getParking(_: dict = Depends(isGuard), db: Session = Depends(get_sessi
             vehicle_type=s.vehicle_type.vehicle_type if s.vehicle_type else "Unknown",
             occupant_plate=log.vehicle_plate if log else None,
             occupant_name=log.name if log else None,
-            occupant_phone=log.owner.phone_number if (log and log.owner) else None,
+            occupant_phone=log.phone_number if log else None,
             check_in_time=log.check_in_time if log else None,
         ))
     return result
@@ -210,8 +211,16 @@ async def calculateExitFee(plate: str, db: Session = Depends(get_session), _: di
         raise HTTPException(
             status_code=404, detail="No active session found for this plate")
 
-    now = datetime.now(timezone.utc)
+    now = _utcnow()
     fee = _calculate_fee(log, now, db)
+    print(fee)
+
+    log.fee_charged = fee
+    log.check_out_time = now
+
+    db.add(log)
+    db.commit()
+    db.refresh(log)
 
     return {
         "plate": log.vehicle_plate,
@@ -236,9 +245,8 @@ async def _handle_exit(plate: str, db: Session) -> dict:
         raise HTTPException(
             status_code=409, detail="Session/slot state mismatch")
 
-    now = datetime.now(timezone.utc)
+    now = _utcnow()
 
-    log.check_out_time = now
     log.is_active = False
     db.add(log)
 
@@ -246,9 +254,14 @@ async def _handle_exit(plate: str, db: Session) -> dict:
     db.add(slot)
 
     db.commit()
+    return{
+        "plate": log.vehicle_plate,
+        "check_out_time": log.check_out_time,
+        "fee": log.fee_charged,
+    }
 
 
-def _calculate_fee(log: ParkingLog, check_out: datetime) -> float:
+def _calculate_fee(log: ParkingLog, check_out: datetime,db) -> float:
     duration_minutes = (check_out - log.check_in_time).total_seconds() / 60
     pricing = db.exec(select(Pricing).where(
         Pricing.vehicle_type_id == log.vehicle_id)).first()
@@ -256,7 +269,10 @@ def _calculate_fee(log: ParkingLog, check_out: datetime) -> float:
         return 0.0
     if duration_minutes >= pricing.threshold_minutes:
         return round(pricing.fixed_rate, 2)
-    return round((duration_minutes / 60) * pricing.hourly_rate, 2)
+    price =  round((duration_minutes / 60) * pricing.hourly_rate, 2)
+    
+    return price if(price>pricing.hourly_rate) else pricing.hourly_rate
+    
 
 
 @router.post("/exit/confirm")
@@ -346,3 +362,51 @@ def setOwner(payload: OwnerRequest, db: Session = Depends(get_session), _: dict 
     db.add(owner)
     db.commit()
     return {"message: the owner is added"}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+#resume endpoint
+@router.post("/resume", status_code=status.HTTP_200_OK)
+async def resumeDetector(_: dict = Depends(isGuard)):
+    """
+    Called by the guard UI when a detection event is denied or skipped.
+    Resumes the local AI detector stream.
+    """
+    await ws_hub.resume()
+    return {"status": "success", "message": "Detector stream resumed."}
+
+
+@router.post("/exit/deny")
+async def denyExit(plate: str, db: Session = Depends(get_session), _: dict = Depends(isGuard)):
+    """
+    Called when a guard denies an exit event.
+    Reverts the prematurely saved fee and check-out time back to null, 
+    keeping the parking log session active.
+    """
+    await ws_hub.resume()
+    log = db.exec(
+        select(ParkingLog).where(
+            ParkingLog.vehicle_plate == plate,
+            ParkingLog.is_active == True
+        )
+    ).first()
+
+    if not log:
+
+        raise HTTPException(
+            status_code=404, detail="No active session found to revert for this plate"
+        )
+
+    # Revert the calculated fields back to null/None
+    log.fee_charged = None
+    log.check_out_time = None
+
+    db.add(log)
+    db.commit()
+
+    # Resume the camera stream
+
+    return {"status": "success", "message": "Database records reverted and detector resumed."}
