@@ -19,7 +19,6 @@ import {
   Radio,
   Camera,
   CreditCard,
-  Clock,
   CheckCircle2,
   UserPlus
 } from '@lucide/vue'
@@ -52,10 +51,18 @@ const selectedVehicleType = ref('')
 const selectedVehicleTypeId = ref<number | null>(null)  // numeric id sent to server
 const selectedSlotId = ref<number | null>(null)         // kept for UI display only (auto-assign on server)
 
+
+// ─── New Slot Allocation States ─────────────────────────────────────────────
+const isAccessiblePerson = ref(false)
+const lotFull = ref(false)
+const assignedSlotDisplay = ref('')
+
+
 // Exit workflow billing details — populated from exit_success WS message
 const feeDetails = ref<any>(null)
 const noSessionFound = ref(false)
 const exitLookupQuery = ref('')
+const exitDetails = ref<any>(null)
 
 // Occupancy grid state
 const occupancySearch = ref('')
@@ -73,6 +80,32 @@ const regPhone = ref('')
 const regPlate = ref('')
 const regVehicleType = ref('Car')
 const submittingRegister = ref(false)
+
+
+const hoveredSlot = ref<any>(null)
+const tooltipPos = ref({ top: '0px', left: '0px', flipBelow: false })
+
+function showTooltip(event: MouseEvent, slot: any) {
+  if (!slot.is_occupied) return
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const tooltipWidth = 256 // matches w-64
+
+  let left = rect.left + rect.width / 2
+  left = Math.min(Math.max(left, tooltipWidth / 2 + 8), window.innerWidth - tooltipWidth / 2 - 8)
+
+  const flipBelow = rect.top < 180 // not enough room above — show below instead
+  tooltipPos.value = {
+    left: `${left}px`,
+    top: flipBelow ? `${rect.bottom + 10}px` : `${rect.top - 10}px`,
+    flipBelow
+  }
+  hoveredSlot.value = slot
+}
+
+function hideTooltip() {
+  hoveredSlot.value = null
+}
+
 
 // ─── Plate lookup debounce (manual mode) ────────────────────────────────────
 let lookupDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -146,6 +179,24 @@ async function lookupOwnerByPlate(plate: string) {
   }
 }
 
+async function lookupExitSession(plate: string) {
+  if (!plate.trim()) return
+  try {
+    const res = await api.get(`/api/v1/guard/exit/lookup?plate=${plate.trim().toUpperCase()}`)
+    if (res.data.found) {
+      exitDetails.value = res.data
+      noSessionFound.value = false
+    } else {
+      exitDetails.value = null
+      noSessionFound.value = true
+    }
+  } catch (err) {
+    console.error('Exit lookup failed:', err)
+    exitDetails.value = null
+    noSessionFound.value = true
+  }
+}
+
 // ─── Watcher: when activeEvent changes, populate form fields ────────────────
 
 watch(activeEvent, (newEvent) => {
@@ -157,6 +208,9 @@ watch(activeEvent, (newEvent) => {
   selectedSlotId.value = null
   feeDetails.value = null
   noSessionFound.value = false
+  isAccessiblePerson.value = false
+  lotFull.value = false
+  assignedSlotDisplay.value = ''
 
   if (!newEvent) {
     activeEventImageUrl.value = ''
@@ -187,20 +241,76 @@ watch(activeEvent, (newEvent) => {
 
 // ─── Watcher: sync selectedVehicleTypeId when dropdown changes ──────────────
 
+// ─── Watcher: Sync selectedVehicleTypeId when dropdown changes ──────────────
+
 watch(selectedVehicleType, (typeName) => {
   const vt = vehicleTypes.value.find(v => v.vehicle_type === typeName)
   selectedVehicleTypeId.value = vt ? vt.vehicle_id : null
 })
 
+// ─── New Automated Slot Assignment Controller ───────────────────────────────
+
+async function autoAssignSlot() {
+  // Only execute logic in ENTRY lane mode when a type has been chosen
+  if (!selectedVehicleTypeId.value || laneMode.value !== 'ENTRY') {
+    assignedSlotDisplay.value = ''
+    lotFull.value = false
+    return
+  }
+
+  try {
+    const res = await api.get('/api/v1/guard/assign-slot', {
+      params: {
+        vehicle_type_id: selectedVehicleTypeId.value,
+        is_accessible: isAccessiblePerson.value
+      }
+    })
+
+    if (res.data && res.data.found) {
+      const slotId = res.data.slot.id
+      console.log(slotId)
+      const displayLabel = res.data.display_slot || res.data.slot?.display_slot || 'Assigned'
+
+      selectedSlotId.value = slotId
+      assignedSlotDisplay.value = `Assigned Slot: ${displayLabel}`
+      lotFull.value = false
+    } else {
+      selectedSlotId.value = null
+      assignedSlotDisplay.value = 'Lot is full'
+      lotFull.value = true
+      addToast('No parking spots available for this classification!', 'error')
+    }
+  } catch (err) {
+    console.error('Failed to auto-assign slot:', err)
+    selectedSlotId.value = null
+    assignedSlotDisplay.value = 'Error assigning slot'
+    lotFull.value = true
+  }
+}
+
+// Reactively query assignment endpoint on type change or accessibility toggle
+watch([selectedVehicleTypeId, isAccessiblePerson], () => {
+  autoAssignSlot()
+},
+  { immediate: true }
+)
+
 // ─── Watcher: plate input debounce owner lookup ─────────────────
 
 watch(plateInput, (newPlate) => {
-  //if (!isManualMode.value || laneMode.value !== 'ENTRY') return
   if (lookupDebounceTimer) clearTimeout(lookupDebounceTimer)
   lookupDebounceTimer = setTimeout(() => {
-    lookupOwnerByPlate(newPlate)
+    if (laneMode.value === 'ENTRY') {
+      lookupOwnerByPlate(newPlate)
+    } else {
+      feeDetails.value = null       // clear stale fee if plate changes after a calc
+      lookupExitSession(newPlate)
+    }
   }, 500)
 })
+
+
+
 
 // ─── Direction controls ──────────────────────────────────────────────────────
 
@@ -209,13 +319,6 @@ function setLaneMode(mode: 'ENTRY' | 'EXIT') {
   // Reset billing state when switching
   feeDetails.value = null
   noSessionFound.value = false
-}
-
-function forceDirection(mode: 'ENTRY' | 'EXIT') {
-  setLaneMode(mode)
-  if (activeEvent.value) {
-    activeEvent.value = { ...activeEvent.value, direction: mode }
-  }
 }
 
 // ─── Manual mode toggle ──────────────────────────────────────────────────────
@@ -250,14 +353,11 @@ async function calculateExitFee() {
   }
   const query = plateInput.value.trim().toUpperCase()
   try {
-    const res = await api.post('/api/v1/guard/exit/calculate',{plate_text:query})
-    
+    const res = await api.get('/api/v1/guard/exit/calculate', { params: { plate: query } })
     feeDetails.value = res.data
-    noSessionFound.value = false
     addToast('Parking fee calculated successfully', 'success')
   } catch (err: any) {
     feeDetails.value = null
-    noSessionFound.value = true
     addToast(err.response?.data?.detail || 'No active check-in found for this vehicle', 'error')
   }
 }
@@ -267,20 +367,61 @@ async function calculateExitFee() {
 const isConfirmDisabled = computed(() => {
   if (!plateInput.value.trim()) return true
   if (laneMode.value === 'ENTRY' && !selectedVehicleTypeId.value) return true
+  if (laneMode.value === 'ENTRY' && lotFull.value) return true
   if (laneMode.value === 'EXIT' && isManualMode.value && (!feeDetails.value || noSessionFound.value)) return true
-  if (!isManualMode.value && !activeEvent.value) return true
+  //if (!isManualMode.value && !activeEvent.value) return true
   return false
 })
+const isDenyDisabled = computed(() => {
+  if (isManualMode.value) {
 
-// ─── Reject / Drop (AI mode only — resumes detector without saving) ──────────
+    return !plateInput.value.trim() && !ownerName.value && !selectedSlotId.value
+  }
+  return !activeEvent.value
+})
 
-function rejectEvent() {
-  if (!activeEvent.value || isManualMode.value) return
-  sendWS({ type: 'confirm', direction: 'reject', plate: activeEvent.value.plate, vehicle_type_id: 0 })
-  addToast(`Detection dropped for ${activeEvent.value.plate}`, 'warning')
-  activeEvent.value = null
-  plateInput.value = ''
-  fetchSlots()
+async function rejectEvent() {
+  // 1. Snag the plate number before form fields are wiped clean
+  const plateToRevert = plateInput.value.trim().toUpperCase()
+
+  // 2. Clear UI form elements, images, and slot displays instantly
+  clearForm()
+  exitDetails.value = null
+
+  // 3. GLOBAL EXIT ACTIONS (Triggers database change no matter what mode)
+  if (laneMode.value === 'EXIT') {
+    if (plateToRevert) {
+      try {
+        // This updates the database regardless of manual/AI status
+        await api.post(`/api/v1/guard/exit/deny?plate=${encodeURIComponent(plateToRevert)}`)
+        addToast(`Exit denied for ${plateToRevert}. Database fee/time reset to null.`, 'warning')
+      } catch (err) {
+        console.error('Failed to change database records:', err)
+        addToast('Failed to cleanly update database records.', 'error')
+      }
+    } else {
+      // If no plate text was present, just resume the stream if in AI mode
+      if (!isManualMode.value) {
+        await api.post('/api/v1/guard/resume')
+      }
+    }
+  }
+
+  // 4. ENTRY ACTIONS
+  else if (laneMode.value === 'ENTRY') {
+    if (!isManualMode.value) {
+      // AI Mode: send resume signal to backend stream
+      try {
+        await api.post('/api/v1/guard/resume')
+        addToast('Entry event denied. Detector resumed.', 'warning')
+      } catch (err) {
+        console.error('Failed to send resume signal:', err)
+      }
+    } else {
+      // Manual Mode: form was already cleared above
+      addToast('Manual entry console cleared.', 'info')
+    }
+  }
 }
 
 // ─── Main confirm handler ────────────────────────────────────────────────────
@@ -298,53 +439,37 @@ async function confirmEvent() {
     return
   }
 
-  if (isManualMode.value) {
-    if (laneMode.value === 'ENTRY') {
-      try {
-        await api.post('/api/v1/guard/entry', {
-          plate:plateInput.value,
-          name: ownerName.value,
-          phone_number: ownerPhone.value,
-          vehicle_type_id: selectedVehicleTypeId.value,
-          slot_id: selectedSlotId.value
-        })
-        addToast(`Manual entry complete: ${plate}`, 'success')
-        clearForm()
-        fetchSlots()
-        fetchDailyUsers()
-        sendWS({ type: 'confirm', direction: 'reject', plate: activeEvent.value.plate, vehicle_type_id: 0 })
-      } catch (err: any) {
-        addToast(err.response?.data?.detail || 'Entry failed', 'error')
-      }
-    } else {
-      try {
-        await api.post('/api/v1/guard/exit', {
-          
-        })
-        addToast(`Manual exit complete: ${plate}`, 'success')
-        clearForm()
-        fetchSlots()
-        sendWS(
-          { 
-            type: 'confirm', direction: 'reject', plate: activeEvent.value.plate, vehicle_type_id: 0 
 
-          })
-      } catch (err: any) {
-        addToast(err.response?.data?.detail || 'Exit failed', 'error')
-      }
+  if (laneMode.value === 'ENTRY') {
+    try {
+      await api.post('/api/v1/guard/entry', {
+        plate: plate,
+        name: ownerName.value,
+        phone_number: ownerPhone.value,
+        vehicle_type_id: selectedVehicleTypeId.value,
+        slot_id: selectedSlotId.value
+      })
+      addToast(`Manual entry complete: ${plate}`, 'success')
+      clearForm()
+      fetchSlots()
+      fetchDailyUsers()
+    } catch (err: any) {
+      addToast(err.response?.data?.detail || 'Entry failed', 'error')
     }
-    return
+  } else {
+    try {
+      await api.post('/api/v1/guard/exit/confirm', null, { params: { plate } })
+      addToast(`Manual exit complete: ${plate} — Fee: $${feeDetails.value?.fee?.toFixed(2) ?? '0.00'}`, 'success')
+      clearForm()
+      fetchSlots()
+    } catch (err: any) {
+      addToast(err.response?.data?.detail || 'Exit failed', 'error')
+    }
   }
+
 
   if (!activeEvent.value) return
 
-  sendWS({
-    type: 'confirm',
-    direction: laneMode.value.toLowerCase(),
-    plate,
-    vehicle_type_id: selectedVehicleTypeId.value,
-    owner_id: activeEvent.value.owner?.id ?? null
-  })
 
   addToast(`Confirming ${laneMode.value.toLowerCase()} for ${plate}...`, 'info')
 }
@@ -362,6 +487,9 @@ function clearForm() {
   feeDetails.value = null
   noSessionFound.value = false
   activeEventImageUrl.value = ''
+  isAccessiblePerson.value = false
+  lotFull.value = false
+  assignedSlotDisplay.value = ''
 }
 
 // ─── Exit backup registry lookup (manual fallback when no session found) ─────
@@ -439,12 +567,13 @@ function handleSlotClick(slot: any) {
     return
   }
   selectedSlotId.value = slot.slot_id
+  assignedSlotDisplay.value = `Assigned Slot: ${slot.display_slot}` 
   addToast(`Selected parking slot: ${slot.display_slot}`, 'success')
 }
 
 function getSlotColorClass(slot: any) {
   if (slot.is_occupied) {
-    return 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border-rose-300 dark:border-rose-900/60 shadow-rose-500/5'
+    return 'bg-gradient-to-br from-rose-600 to-red-800 dark:from-rose-700 dark:to-red-900 text-white border-red-900/40 shadow-md shadow-red-900/20'
   }
   if (slot.is_accessible) {
     return 'bg-sky-50 dark:bg-sky-950/20 text-sky-600 dark:text-sky-400 border-sky-300 dark:border-sky-900/60 shadow-sky-500/5'
@@ -515,13 +644,7 @@ function enterShift() {
 let ws: WebSocket | null = null
 let wsReconnectTimeout: ReturnType<typeof setTimeout> | null = null
 
-function sendWS(data: object) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data))
-  } else {
-    console.warn('WS not open — message dropped:', data)
-  }
-}
+
 
 function connectWS() {
   if (ws) ws.close()
@@ -698,7 +821,8 @@ onUnmounted(() => {
         </div>
         <div v-if="!sidebarCollapsed" class="min-w-0 transition-opacity">
           <span
-            class="font-bold text-lg bg-gradient-to-r from-violet-600 to-indigo-600 bg-clip-text text-transparent">Easy Parking</span>
+            class="font-bold text-lg bg-gradient-to-r from-violet-600 to-indigo-600 bg-clip-text text-transparent">Easy
+            Parking</span>
           <span class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Guard
             Panel</span>
         </div>
@@ -821,9 +945,11 @@ onUnmounted(() => {
                       class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
                   </span>
+
                   <span
                     class="font-extrabold text-sm uppercase tracking-wider text-slate-500 dark:text-slate-400">Vision
-                    System</span>
+                    System
+                  </span>
                 </div>
               </div>
 
@@ -846,16 +972,21 @@ onUnmounted(() => {
                 </span>
               </div>
 
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
+              <div class="flex flex-col gap-6 items-stretch">
+                <!-- 1. AI Image Box: Removed aspect-[4/3] and changed object-cover to object-contain -->
                 <div
-                  class="relative rounded-2xl overflow-hidden aspect-[4/3] bg-slate-900 border border-slate-950 flex flex-col items-center justify-center text-slate-500 shadow-inner group">
+                  class="relative rounded-2xl overflow-hidden min-h-[350px] bg-slate-900 border border-slate-950 flex flex-col items-center justify-center text-slate-500 shadow-inner group">
+
                   <div v-if="isManualMode" class="flex flex-col items-center gap-3">
                     <Radio class="w-12 h-12 text-amber-500 animate-pulse" />
                     <span class="text-xs font-semibold text-slate-400">Manual Console Mode Active</span>
                     <span class="text-[10px] text-slate-500">Camera radar feed bypassed</span>
                   </div>
+
+                  <!-- Changed to object-contain so the whole image fits without cutting off the top -->
                   <img v-else-if="activeEventImageUrl && !cameraOffline" :src="activeEventImageUrl" alt="Camera Capture"
-                    class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                    class="w-full h-full object-contain transition-transform duration-500 group-hover:scale-105" />
+
                   <div v-else-if="!cameraOffline" class="flex flex-col items-center gap-3">
                     <Camera class="w-12 h-12 text-slate-700 animate-pulse" />
                     <span class="text-xs font-semibold text-slate-600">Waiting for Vision Event</span>
@@ -879,8 +1010,9 @@ onUnmounted(() => {
                   </transition>
                 </div>
 
+                <!-- 2. OCR Readout: Moved below the image, removed the Force overrides -->
                 <div
-                  class="flex flex-col justify-between p-4 rounded-2xl bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800/80">
+                  class="flex flex-col p-4 rounded-2xl bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800/80">
                   <div class="space-y-4">
                     <span class="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Vision
                       OCR Readout</span>
@@ -906,29 +1038,7 @@ onUnmounted(() => {
                     </div>
                   </div>
 
-                  <div class="space-y-2 pt-4 border-t border-slate-200/50 dark:border-slate-800/50">
-                    <span
-                      class="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Manual
-                      Vector Overrides:</span>
-                    <div class="flex gap-2">
-                      <button @click="forceDirection('ENTRY')" :disabled="!activeEvent || isManualMode" :class="[
-                        laneMode === 'ENTRY'
-                          ? 'bg-violet-600 hover:bg-violet-500 text-white shadow-md shadow-violet-600/20'
-                          : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800',
-                        'flex-1 py-2 px-3 rounded-xl font-semibold text-xs transition-all cursor-pointer'
-                      ]">
-                        Force Entry
-                      </button>
-                      <button @click="forceDirection('EXIT')" :disabled="!activeEvent || isManualMode" :class="[
-                        laneMode === 'EXIT'
-                          ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-md shadow-amber-600/20'
-                          : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800',
-                        'flex-1 py-2 px-3 rounded-xl font-semibold text-xs transition-all cursor-pointer'
-                      ]">
-                        Force Exit
-                      </button>
-                    </div>
-                  </div>
+                  <!-- The "Manual Vector Overrides" block containing Force Entry/Exit has been deleted here -->
                 </div>
               </div>
             </div>
@@ -987,12 +1097,12 @@ onUnmounted(() => {
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div class="space-y-1.5">
                         <span class="text-xs font-semibold text-slate-500">Driver Full Name</span>
-                        <input type="text" v-model="ownerName" placeholder="e.g. John Doe"
+                        <input type="text" v-model="ownerName" placeholder="Driver Name"
                           class="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder-slate-400 focus:border-violet-500 dark:border-slate-800 dark:bg-slate-950/50 dark:text-white dark:focus:border-violet-400 outline-none text-sm transition-all" />
                       </div>
                       <div class="space-y-1.5">
                         <span class="text-xs font-semibold text-slate-500">Phone Contact</span>
-                        <input type="text" v-model="ownerPhone" placeholder="e.g. +91 999999"
+                        <input type="text" v-model="ownerPhone" placeholder="e.g. 0771234567"
                           class="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder-slate-400 focus:border-violet-500 dark:border-slate-800 dark:bg-slate-950/50 dark:text-white dark:focus:border-violet-400 outline-none text-sm transition-all" />
                       </div>
                     </div>
@@ -1007,54 +1117,71 @@ onUnmounted(() => {
                             {{ v.vehicle_type }}
                           </option>
                         </select>
+
+                        <label class="flex items-center gap-2 mt-2 cursor-pointer select-none">
+                          <input type="checkbox" v-model="isAccessiblePerson"
+                            class="rounded border-slate-300 dark:border-slate-700 text-violet-600 focus:ring-violet-500 h-4 w-4 accent-violet-600" />
+                          <span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                            Requires Accessible Space ♿
+                          </span>
+                        </label>
                       </div>
 
                       <div class="space-y-1.5">
                         <span class="text-xs font-semibold text-slate-500">Selected Slot Allocation</span>
-                        <div
-                          class="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-950/50 font-mono text-sm font-bold flex items-center justify-between">
-                          <span :class="selectedSlotId ? 'text-violet-600 dark:text-violet-400' : 'text-slate-400'">
-                            {{selectedSlotId ? slots.find(s => s.slot_id === selectedSlotId)?.display_slot : 'None Selected' }}
+                        <div :class="[
+                          lotFull ? 'border-rose-300 bg-rose-50/50 dark:border-rose-900/50 dark:bg-rose-950/20' : 'border-slate-200 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-950/50',
+                          'w-full px-4 py-3 rounded-xl font-mono text-sm font-bold flex items-center justify-between transition-all border'
+                        ]">
+                          <span :class="[
+                            lotFull ? 'text-rose-600 dark:text-rose-400' : selectedSlotId ? 'text-violet-600 dark:text-violet-400' : 'text-slate-400'
+                          ]">
+                            {{assignedSlotDisplay || (selectedSlotId ? slots.find(s => s.slot_id ===
+                              selectedSlotId)?.display_slot : 'None Selected')}}
                           </span>
-                          <span class="text-[10px] text-slate-400 font-sans uppercase">Click slot below</span>
+                          <span
+                            :class="[lotFull ? 'text-rose-500' : 'text-slate-400', 'text-[10px] font-sans uppercase tracking-wider font-semibold']">
+                            {{ lotFull ? 'Unavailable' : 'Auto-Assigned' }}
+                          </span>
                         </div>
                       </div>
                     </div>
                   </div>
 
                   <div v-else-if="laneMode === 'EXIT'" class="space-y-4">
-                    <div v-if="feeDetails"
-                      class="bg-gradient-to-br from-slate-900 to-indigo-950 text-white rounded-2xl p-5 border border-slate-800/80 shadow-md flex flex-col gap-4 animate-shake">
+                    <div v-if="exitDetails"
+                      class="bg-gradient-to-br from-slate-900 to-indigo-950 text-white rounded-2xl p-5 border border-slate-800/80 shadow-md flex flex-col gap-4">
                       <div class="flex justify-between items-start border-b border-slate-800 pb-3 shrink-0">
                         <div>
-                          <h4 class="font-extrabold text-sm uppercase tracking-wider text-slate-400">Exit Billing
-                            Invoice</h4>
-                          <span class="text-xs font-mono text-violet-400">{{ feeDetails.plate }}</span>
+                          <h4 class="font-extrabold text-sm uppercase tracking-wider text-slate-400">Exit Session</h4>
+                          <span class="text-xs font-mono text-violet-400">{{ exitDetails.plate }}</span>
                         </div>
                         <CreditCard class="w-6 h-6 text-violet-400" />
                       </div>
 
                       <div class="grid grid-cols-2 gap-4 text-xs">
                         <div class="space-y-1">
-                          <span class="text-slate-400 uppercase tracking-wider block text-[10px]">Check-In Time</span>
-                          <div class="font-semibold flex items-center gap-1.5">
-                            <Clock class="w-3.5 h-3.5 text-violet-400" />
-                            <span>{{ feeDetails.check_in_time ? new Date(feeDetails.check_in_time).toLocaleTimeString()
-                              : 'N/A' }}</span>
-                          </div>
+                          <span class="text-slate-400 uppercase tracking-wider block text-[10px]">Name</span>
+                          <span class="font-semibold">{{ exitDetails.name || 'N/A' }}</span>
                         </div>
                         <div class="space-y-1">
-                          <span class="text-slate-400 uppercase tracking-wider block text-[10px]">Total Duration</span>
-                          <div class="font-semibold flex items-center gap-1.5">
-                            <Clock class="w-3.5 h-3.5 text-violet-400" />
-                            <span>{{ Math.round(feeDetails.duration_minutes) }} mins</span>
-                          </div>
+                          <span class="text-slate-400 uppercase tracking-wider block text-[10px]">Vehicle Type</span>
+                          <span class="font-semibold">{{ exitDetails.vehicle_type || 'N/A' }}</span>
+                        </div>
+                        <div class="space-y-1">
+                          <span class="text-slate-400 uppercase tracking-wider block text-[10px]">Phone</span>
+                          <span class="font-semibold">{{ exitDetails.phone_number || '—' }}</span>
+                        </div>
+                        <div class="space-y-1">
+                          <span class="text-slate-400 uppercase tracking-wider block text-[10px]">Duration</span>
+                          <span class="font-semibold">{{ Math.round(exitDetails.duration_minutes) }} mins</span>
                         </div>
                       </div>
 
-                      <div class="flex justify-between items-center pt-3 border-t border-slate-800 mt-1">
+                      <div v-if="feeDetails"
+                        class="flex justify-between items-center pt-3 border-t border-slate-800 mt-1">
                         <span class="text-sm font-bold text-slate-400">Total Due Amount:</span>
-                        <span class="text-2xl font-black text-emerald-400 font-mono">${{ feeDetails.fee?.toFixed(2)
+                        <span class="text-2xl font-black text-emerald-400 font-mono">Rs.{{ feeDetails.fee?.toFixed(2)
                           }}</span>
                       </div>
                     </div>
@@ -1102,7 +1229,7 @@ onUnmounted(() => {
               </div>
 
               <div class="flex items-center gap-4 mt-6 pt-6 border-t border-slate-100 dark:border-slate-800/80">
-                <button @click="rejectEvent" :disabled="!activeEvent || isManualMode"
+                <button @click="rejectEvent" :disabled="isDenyDisabled"
                   class="flex-1 py-4 px-6 rounded-2xl bg-rose-50 border border-rose-200/80 text-rose-600 hover:bg-rose-100 dark:bg-rose-950/10 dark:border-rose-950/40 dark:text-rose-400 dark:hover:bg-rose-950/20 font-bold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">
                   Deny
                 </button>
@@ -1147,43 +1274,16 @@ onUnmounted(() => {
                 </div>
 
                 <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-4">
-                  <div v-for="slot in floor.slots" :key="slot.slot_id" @click="handleSlotClick(slot)" :class="[
-                    getSlotColorClass(slot),
-                    selectedSlotId === slot.slot_id ? 'ring-4 ring-violet-500/80 border-violet-500 dark:border-violet-500' : 'border-slate-200 dark:border-slate-800/80',
-                    slot.isMuted ? 'opacity-20 pointer-events-none' : 'opacity-100',
-                    'relative group cursor-pointer p-3.5 rounded-2xl border shadow-sm flex flex-col items-center justify-between text-center select-none transition-all duration-300'
-                  ]">
+                  <div v-for="slot in floor.slots" :key="slot.slot_id" @click="handleSlotClick(slot)"
+                    @mouseenter="showTooltip($event, slot)" @mouseleave="hideTooltip" :class="[
+                      getSlotColorClass(slot),
+                      selectedSlotId === slot.slot_id ? 'ring-4 ring-violet-500/80 border-violet-500 dark:border-violet-500' : 'border-slate-200 dark:border-slate-800/80',
+                      slot.isMuted ? 'opacity-20 pointer-events-none' : 'opacity-100',
+                      'relative cursor-pointer p-3.5 rounded-2xl border shadow-sm flex flex-col items-center justify-between text-center select-none transition-all duration-300'
+                    ]">
                     <span v-if="slot.is_accessible" class="absolute top-2 left-2 text-xs"
                       title="Accessible Space">♿</span>
 
-                    <div v-if="slot.is_occupied"
-                      class="absolute bottom-full left-1/2 -translate-x-1/2 mb-3.5 hidden group-hover:block z-[999] w-64 bg-slate-950/95 dark:bg-black/95 text-white rounded-2xl p-4 shadow-2xl border border-slate-800 pointer-events-none transition-all duration-200">
-                      <div
-                        class="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2.5 text-left flex items-center gap-1.5">
-                        <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                        <span>Occupant telemetries</span>
-                      </div>
-                      <div class="space-y-1.5 text-xs text-left">
-                        <div class="flex justify-between items-center">
-                          <span class="text-slate-400">Plate Number:</span>
-                          <span
-                            class="font-mono font-bold text-violet-400 bg-violet-950/40 px-2 py-0.5 rounded border border-violet-800/40">{{
-                              slot.occupant_plate || 'N/A' }}</span>
-                        </div>
-                        <div class="flex justify-between items-center">
-                          <span class="text-slate-400">Driver Name:</span>
-                          <span class="font-semibold text-slate-220">{{ slot.occupant_name || 'Daily User' }}</span>
-                        </div>
-                        <div class="flex justify-between items-center">
-                          <span class="text-slate-400">Phone Contact:</span>
-                          <span class="text-slate-300 font-mono">{{ slot.occupant_phone || 'None' }}</span>
-                        </div>
-                        <div class="flex justify-between items-center">
-                          <span class="text-slate-400">Vehicle Type:</span>
-                          <span class="font-semibold text-slate-200 uppercase">{{ slot.vehicle_type }}</span>
-                        </div>
-                      </div>
-                    </div>
 
                     <span class="text-xs font-bold tracking-tight text-slate-400 dark:text-slate-500">{{
                       slot.display_slot }}</span>
@@ -1200,6 +1300,37 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
+            <Teleport to="body">
+              <div v-if="hoveredSlot"
+                :style="{ top: tooltipPos.top, left: tooltipPos.left, transform: tooltipPos.flipBelow ? 'translateX(-50%)' : 'translate(-50%, -100%)' }"
+                class="fixed z-[999] w-64 bg-slate-950/95 dark:bg-black/95 text-white rounded-2xl p-4 shadow-2xl border border-slate-800 pointer-events-none transition-all duration-150">
+                <div
+                  class="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2.5 text-left flex items-center gap-1.5">
+                  <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                  <span>Occupant telemetries</span>
+                </div>
+                <div class="space-y-1.5 text-xs text-left">
+                  <div class="flex justify-between items-center">
+                    <span class="text-slate-400">Plate Number:</span>
+                    <span
+                      class="font-mono font-bold text-violet-400 bg-violet-950/40 px-2 py-0.5 rounded border border-violet-800/40">{{
+                        hoveredSlot.occupant_plate || 'N/A' }}</span>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span class="text-slate-400">Driver Name:</span>
+                    <span class="font-semibold text-slate-200">{{ hoveredSlot.occupant_name || 'Daily User' }}</span>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span class="text-slate-400">Phone Contact:</span>
+                    <span class="text-slate-300 font-mono">{{ hoveredSlot.occupant_phone || 'None' }}</span>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span class="text-slate-400">Vehicle Type:</span>
+                    <span class="font-semibold text-slate-200 uppercase">{{ hoveredSlot.vehicle_type }}</span>
+                  </div>
+                </div>
+              </div>
+            </Teleport>
           </div>
         </div>
 
