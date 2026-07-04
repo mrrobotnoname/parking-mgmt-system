@@ -16,8 +16,8 @@ class Pricing(SQLModel, table=True):
     hourly_rate: float = Field(default=0.0)
     fixed_rate: float = Field(default=0.0)      # The flat/cap price applied if threshold is passed
     
-    # Threshold in minutes (e.g., 180 minutes = 3 hours)
-    threshold_minutes: int = Field(default=180) 
+    # Threshold in minutes (e.g., 300 minutes = 5 hours)
+    threshold_minutes: int = Field(default=300) 
 
     # Foreign Key linking to VehicleType (1-to-1 relationship)
     vehicle_type_id: int = Field(foreign_key="vehicletype.vehicle_id", unique=True)

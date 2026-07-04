@@ -6,7 +6,7 @@ from sqlmodel import SQLModel, Field, Relationship
 
 
 if TYPE_CHECKING:
-    from backend.app.models.vehicle_type import VehicleType
+    from app.models.vehicle_type import VehicleType
     
 
 class ParkingSlot(SQLModel, table=True):
