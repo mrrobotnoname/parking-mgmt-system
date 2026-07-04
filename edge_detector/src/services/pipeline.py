@@ -44,6 +44,7 @@ async def processing_pipeline_loop(
 
         # Light Motion Shield Check
         if not motion_shield.has_movement(frame):
+            
             await asyncio.sleep(0.1)
             continue
 
