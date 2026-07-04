@@ -1,9 +1,7 @@
 import re
-
 from dotenv import load_dotenv
 import os
 from fastapi import WebSocket, WebSocketException, status
-
 import jwt
 from pwdlib import PasswordHash
 from datetime import datetime, timedelta, timezone
@@ -14,7 +12,6 @@ password_hash = PasswordHash.recommended()
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 720  # expire in 12 hours
-
 
 PASSWORD_REGEX = r"^((?=\S*?[A-Z])(?=\S*?[a-z])(?=\S*?[0-9]).{6,})\S$"
 

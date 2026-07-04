@@ -110,7 +110,7 @@ class WSHub:
         # The router will call push_detection_to_guard() with owner attached
         logger.info(f"Detection received: [{plate}] direction={direction}")
 
-    async def push_detection_to_guard(self, plate: str, direction: str, image_b64: Optional[str], owner: Optional[dict]):
+    async def push_detection_to_guard(self, plate: str, direction: str, image_b64: Optional[str]):
         """
         Called by router after owner lookup — pushes full detection payload to guard.
         Starts auto-resume timeout.
@@ -120,12 +120,9 @@ class WSHub:
             "plate": plate,
             "direction": direction,
             "image_b64": image_b64,
-            "owner": owner,  # None if not found — guard fills in manually
         }
 
-        # Update pending with owner info
-        if self.pending_detection:
-            self.pending_detection["owner"] = owner
+
 
         await self._send_guard(payload)
 

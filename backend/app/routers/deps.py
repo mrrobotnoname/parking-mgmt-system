@@ -5,7 +5,7 @@ from sqlmodel import Session,select
 
 from app.models.user import User
 from app.db.session import get_session
-from app.core.security import SECRETE_KEY, ALGORITHEM
+from app.core.security import SECRET_KEY, ALGORITHM
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
 
@@ -22,12 +22,24 @@ def get_current_user(
     )
 
     try:
-        payload =  jwt.decode(token,SECRETE_KEY,algorithms=ALGORITHEM)
+        payload =  jwt.decode(token,SECRET_KEY,algorithms=ALGORITHM)
         if payload.get("sub") is None or payload.get("role") is None:
             raise credentials_exception
         return payload
     except jwt.PyJWTError:
         raise credentials_exception
+
+def isGuard(payload: dict = Depends(get_current_user)) -> User:
+    """
+    Allows access for verified guards or admins.
+    """
+    if payload.get("role") not in {"guard", "admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Guard privileges required."
+        )
+    return payload
+
     
 
 def isAdmin(payload: dict = Depends(get_current_user)) -> User:
