@@ -29,17 +29,20 @@ def create_token(subject: str, role: str):
         "role": role,
         "exp": expire
     }
-    jwt_token = jwt.encode(token_payload,SECRET_KEY,algorithm=ALGORITHM)
+    jwt_token = jwt.encode(token_payload, SECRET_KEY, algorithm=ALGORITHM)
     return jwt_token
 
-def encryptPassword(password:str):
+
+def encryptPassword(password: str):
     return password_hash.hash(password)
 
-def verify_paasword(plain_password:str, hash_password: str) -> str:
+
+def verify_paasword(plain_password: str, hash_password: str) -> str:
     return password_hash.verify(plain_password, hash_password)
 
-def validate_password(password:str) -> bool:
-   return bool(re.match(PASSWORD_REGEX,password))
+
+def validate_password(password: str) -> bool:
+    return bool(re.match(PASSWORD_REGEX, password))
 
 
 async def ws_authenticate(websocket: WebSocket) -> dict:
